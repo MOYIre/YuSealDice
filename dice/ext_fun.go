@@ -1332,7 +1332,7 @@ func RegisterBuiltinExtFun(self *Dice) {
 			}
 			var result string
 			if len(code) == 0 {
-				result = "无法生成海豹校验码，该骰子不是官方发布的海豹！"
+				result = "铭茗个性化骰点核心\npowered by SealDice"
 			} else {
 				VarSetValueStr(ctx, "$tcode", code)
 				VarSetValueStr(ctx, "$t校验码", code)

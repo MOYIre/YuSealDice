@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"math"
 
 	"github.com/samber/lo"
 	ds "github.com/sealdice/dicescript"
@@ -1318,43 +1319,159 @@ func RegisterBuiltinExtCoc7(self *Dice) {
 		},
 	}
 
-	cmdCoc := &CmdItemInfo{
-		Name:      "coc",
-		ShortHelp: ".coc [<数量>] // 制卡指令，返回<数量>组人物属性",
-		Help:      "COC制卡指令:\n.coc [<数量>] // 制卡指令，返回<数量>组人物属性",
-		Solve: func(ctx *MsgContext, msg *Message, cmdArgs *CmdArgs) CmdExecuteResult {
-			n := cmdArgs.GetArgN(1)
-			val, err := strconv.ParseInt(n, 10, 64)
-			if err != nil {
-				if n == "" {
-					val = 1 // 数量不存在时，视为1次
-				} else {
-					return CmdExecuteResult{Matched: true, Solved: true, ShowHelp: true}
+cmdCoc := &CmdItemInfo{
+	Name:      "coc",
+	ShortHelp: ".coc [<数量>] // 制卡指令，返回<数量>组人物属性",
+	Help:      "COC制卡指令:\n.coc [<数量>] // 制卡指令，返回<数量>组人物属性",
+	Solve: func(ctx *MsgContext, msg *Message, cmdArgs *CmdArgs) CmdExecuteResult {
+		n := cmdArgs.GetArgN(1)
+		val, err := strconv.ParseInt(n, 10, 64)
+		if err != nil {
+			if n == "" {
+				val = 1
+			} else {
+				return CmdExecuteResult{Matched: true, Solved: true, ShowHelp: true}
+			}
+		}
+		if val > ctx.Dice.Config.MaxCocCardGen {
+			val = ctx.Dice.Config.MaxCocCardGen
+		}
+
+		// --- 构建属性分布 ---
+		dist3 := map[int]int64{}
+		for a := 1; a <= 6; a++ {
+			for b := 1; b <= 6; b++ {
+				for c := 1; c <= 6; c++ {
+					dist3[a+b+c]++
 				}
 			}
-			if val > ctx.Dice.Config.MaxCocCardGen {
-				val = ctx.Dice.Config.MaxCocCardGen
+		}
+		dist2 := map[int]int64{}
+		for a := 1; a <= 6; a++ {
+			for b := 1; b <= 6; b++ {
+				dist2[a+b+6]++
+			}
+		}
+
+		// --- 卷积出整卡分布 ---
+		conv := map[int]int64{0: 1}
+		for i := 0; i < 6; i++ { // 六个3d6
+			tmp := map[int]int64{}
+			for s1, c1 := range conv {
+				for s2, c2 := range dist3 {
+					tmp[s1+s2] += c1 * c2
+				}
+			}
+			conv = tmp
+		}
+		for i := 0; i < 3; i++ { // 三个2d6+6
+			tmp := map[int]int64{}
+			for s1, c1 := range conv {
+				for s2, c2 := range dist2 {
+					tmp[s1+s2] += c1 * c2
+				}
+			}
+			conv = tmp
+		}
+
+		var totalComb int64 = 1
+		for i := 0; i < 6; i++ {
+			totalComb *= 216
+		}
+		for i := 0; i < 3; i++ {
+			totalComb *= 36
+		}
+
+		chineseNums := []string{"壹", "贰", "叁", "肆", "伍", "陆", "柒", "捌", "玖", "拾"}
+		var allResults []string
+
+		for i := 0; i < int(val); i++ {
+			attrs := map[string]string{
+				"力量": "3d6*5",
+				"敏捷": "3d6*5",
+				"意志": "3d6*5",
+				"体质": "3d6*5",
+				"外貌": "3d6*5",
+				"教育": "(2d6+6)*5",
+				"体型": "(2d6+6)*5",
+				"智力": "(2d6+6)*5",
+				"幸运": "3d6*5",
 			}
 
-			var ss []string
-			for range val {
-				result := ctx.EvalFString(`力量:{力量=3d6*5} 敏捷:{敏捷=3d6*5} 意志:{意志=3d6*5}\n体质:{体质=3d6*5} 外貌:{外貌=3d6*5} 教育:{教育=(2d6+6)*5}\n体型:{体型=(2d6+6)*5} 智力:{智力=(2d6+6)*5} 幸运:{幸运=3d6*5}\nHP:{(体质+体型)/10} <DB:{(力量 + 体型) < 65 ? -2, (力量 + 体型) < 85 ? -1, (力量 + 体型) < 125 ? 0, (力量 + 体型) < 165 ? '1d4', (力量 + 体型) < 205 ? '1d6'}> [{力量+敏捷+意志+体质+外貌+教育+体型+智力}/{力量+敏捷+意志+体质+外貌+教育+体型+智力+幸运}]`, nil)
-				if result.vm.Error != nil {
-					break
-				}
-				resultText := result.ToString()
-				resultText = strings.ReplaceAll(resultText, `\n`, "\n")
-				ss = append(ss, resultText)
+			vals := map[string]int64{}
+			var total int64 = 0
+			for k, expr := range attrs {
+				r, _, _ := DiceExprEvalBase(ctx, expr, RollExtraFlags{DisableBlock: true})
+				v := int64(r.MustReadInt())
+				vals[k] = v
+				total += v
 			}
-			sep := DiceFormatTmpl(ctx, "COC:制卡_分隔符")
-			info := strings.Join(ss, sep)
-			VarSetValueStr(ctx, "$t制卡结果文本", info)
-			text := DiceFormatTmpl(ctx, "COC:制卡")
-			// fmt.Sprintf("<%s>的七版COC人物作成:\n%s", ctx.Player.Name, info)
-			ReplyToSender(ctx, msg, text)
-			return CmdExecuteResult{Matched: true, Solved: true}
-		},
-	}
+
+			// --- HP与DB ---
+			hp := (vals["体质"] + vals["体型"]) / 10
+			sumPow := vals["力量"] + vals["体型"]
+			db := "-2"
+			switch {
+			case sumPow < 65:
+				db = "-2"
+			case sumPow < 85:
+				db = "-1"
+			case sumPow < 125:
+				db = "0"
+			case sumPow < 165:
+				db = "1d4"
+			case sumPow < 205:
+				db = "1d6"
+			}
+
+			// --- 概率计算 ---
+			base := int(total / 5)
+			probPercent := 0.0
+			if cnt, ok := conv[base]; ok && totalComb > 0 {
+				probPercent = float64(cnt) / float64(totalComb) * 100.0
+			}
+			var rankSum int64
+			for k, v := range conv {
+				if k >= base {
+					rankSum += v
+				}
+			}
+			percentile := float64(rankSum) / float64(totalComb) * 100.0
+
+			// --- 星级 ---
+			expected := 510.0
+			sigma := 40.0
+			z := (float64(total) - expected) / sigma
+			starsCount := int(math.Round(5 + z*3.5))
+			if starsCount < 1 {
+				starsCount = 1
+			} else if starsCount > 10 {
+				starsCount = 10
+			}
+			stars := strings.Repeat("★", starsCount) + strings.Repeat("☆", 10-starsCount)
+
+			// --- 输出 ---
+			msgText := fmt.Sprintf(
+				"【%s】\n%s\n力量:%d 敏捷:%d 意志:%d\n体质:%d 外貌:%d 教育:%d\n体型:%d 智力:%d 幸运:%d\nHP:%d <DB:%s> [%d/%d]\n属性概率:%.2f%% (前%.2f%%)",
+				chineseNums[i%len(chineseNums)],
+				stars,
+				vals["力量"], vals["敏捷"], vals["意志"],
+				vals["体质"], vals["外貌"], vals["教育"],
+				vals["体型"], vals["智力"], vals["幸运"],
+				hp, db,
+				total-vals["幸运"], total,
+				probPercent, percentile,
+			)
+			allResults = append(allResults, msgText)
+		}
+
+		header := fmt.Sprintf("<%s>的七版COC人物作成:\n", ctx.Player.Name)
+		finalMsg := header + strings.Join(allResults, "\n----------------------\n")
+		ReplyToSender(ctx, msg, finalMsg)
+		return CmdExecuteResult{Matched: true, Solved: true}
+	},
+}
+
 
 	theExt := &ExtInfo{
 		Name:       "coc7",
