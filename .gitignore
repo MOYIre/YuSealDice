@@ -47,3 +47,5 @@ sealdice-lock.lock
 upgrade_metadata.json
 
 /signature/**/*
+
+build/

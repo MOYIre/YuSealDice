@@ -77,6 +77,7 @@ if ! go list ./... >/dev/null 2>go_err.log; then
     fi
 fi
 rm -f go_err.log
+
 echo "御铭茗编译小助手"
 echo "🐾快速编译选项🐾"
 echo "1) Linux amd64"
@@ -105,8 +106,15 @@ for target in "${TARGETS[@]}"; do
     output="app-${os}-${arch}"
     [ "$os" = "windows" ] && output="${output}.exe"
 
-    echo "开始编译了！: $os $arch"
-    CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -o "$BUILD_DIR/$output"
+    echo "开始编译: $os $arch"
+
+    if [ "$os" = "android" ]; then
+        # Android 直接 go build
+        go build -o "$BUILD_DIR/$output"
+    else
+        # 其他平台
+        CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -o "$BUILD_DIR/$output"
+    fi
 done
 
 echo "编译完成辣！文件在 ./build 目录："
