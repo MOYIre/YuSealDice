@@ -11,7 +11,7 @@ import (
 	"time"
 	"unicode"
 	"math"
-	
+
 	"github.com/samber/lo"
 	ds "github.com/sealdice/dicescript"
 )
@@ -1319,40 +1319,25 @@ func RegisterBuiltinExtCoc7(self *Dice) {
 		},
 	}
 
-// 玩家结构扩展
-type GroupPlayerInfo struct {
-	Name string
-}
-
 cmdCoc := &CmdItemInfo{
 	Name:      "coc",
-	ShortHelp: ".coc [<数量>] [主题] // 制卡指令，可选主题：官方/星级/炉石",
-	Help:      "COC制卡指令:\n.coc [<数量>] [主题]\n可选主题：官方/星级/炉石",
+	ShortHelp: ".coc [<数量>] // 制卡指令，返回<数量>组人物属性（带称号）",
+	Help:      "COC制卡指令:\n.coc [<数量>] // 制卡指令，返回<数量>组人物属性（带称号）",
 	Solve: func(ctx *MsgContext, msg *Message, cmdArgs *CmdArgs) CmdExecuteResult {
-		// 解析数量
 		n := cmdArgs.GetArgN(1)
 		val, err := strconv.ParseInt(n, 10, 64)
-		if err != nil || val < 1 {
-			val = 1
+		if err != nil {
+			if n == "" {
+				val = 1
+			} else {
+				return CmdExecuteResult{Matched: true, Solved: true, ShowHelp: true}
+			}
 		}
 		if val > ctx.Dice.Config.MaxCocCardGen {
 			val = ctx.Dice.Config.MaxCocCardGen
 		}
 
-		// 解析主题
-		theme := "官方"
-		if len(cmdArgs.Args) >= 2 {
-			switch strings.ToLower(cmdArgs.GetArgN(2)) {
-			case "星级", "xingji":
-				theme = "星级"
-			case "炉石", "hearthstone":
-				theme = "炉石"
-			default:
-				theme = "官方"
-			}
-		}
-
-		// --- 构建属性分布（卷积用） ---
+		// --- 构建属性分布 ---
 		dist3 := map[int]int64{}
 		for a := 1; a <= 6; a++ {
 			for b := 1; b <= 6; b++ {
@@ -1368,8 +1353,9 @@ cmdCoc := &CmdItemInfo{
 			}
 		}
 
+		// --- 卷积出整卡分布 ---
 		conv := map[int]int64{0: 1}
-		for i := 0; i < 6; i++ {
+		for i := 0; i < 6; i++ { // 六个3d6
 			tmp := map[int]int64{}
 			for s1, c1 := range conv {
 				for s2, c2 := range dist3 {
@@ -1378,7 +1364,7 @@ cmdCoc := &CmdItemInfo{
 			}
 			conv = tmp
 		}
-		for i := 0; i < 3; i++ {
+		for i := 0; i < 3; i++ { // 三个2d6+6
 			tmp := map[int]int64{}
 			for s1, c1 := range conv {
 				for s2, c2 := range dist2 {
@@ -1388,22 +1374,32 @@ cmdCoc := &CmdItemInfo{
 			conv = tmp
 		}
 
-		totalComb := int64(1)
-		for i := 0; i < 6; i++ { totalComb *= 216 }
-		for i := 0; i < 3; i++ { totalComb *= 36 }
+		var totalComb int64 = 1
+		for i := 0; i < 6; i++ {
+			totalComb *= 216
+		}
+		for i := 0; i < 3; i++ {
+			totalComb *= 36
+		}
 
 		chineseNums := []string{"壹", "贰", "叁", "肆", "伍", "陆", "柒", "捌", "玖", "拾"}
 		var allResults []string
 
 		for i := 0; i < int(val); i++ {
 			attrs := map[string]string{
-				"力量": "3d6*5", "敏捷": "3d6*5", "意志": "3d6*5",
-				"体质": "3d6*5", "外貌": "3d6*5", "教育": "(2d6+6)*5",
-				"体型": "(2d6+6)*5", "智力": "(2d6+6)*5", "幸运": "3d6*5",
+				"力量": "3d6*5",
+				"敏捷": "3d6*5",
+				"意志": "3d6*5",
+				"体质": "3d6*5",
+				"外貌": "3d6*5",
+				"教育": "(2d6+6)*5",
+				"体型": "(2d6+6)*5",
+				"智力": "(2d6+6)*5",
+				"幸运": "3d6*5",
 			}
 
 			vals := map[string]int64{}
-			var total int64
+			var total int64 = 0
 			for k, expr := range attrs {
 				r, _, _ := DiceExprEvalBase(ctx, expr, RollExtraFlags{DisableBlock: true})
 				v := int64(r.MustReadInt())
@@ -1411,18 +1407,24 @@ cmdCoc := &CmdItemInfo{
 				total += v
 			}
 
+			// --- HP与DB ---
 			hp := (vals["体质"] + vals["体型"]) / 10
 			sumPow := vals["力量"] + vals["体型"]
 			db := "-2"
 			switch {
-			case sumPow < 65: db = "-2"
-			case sumPow < 85: db = "-1"
-			case sumPow < 125: db = "0"
-			case sumPow < 165: db = "1d4"
-			case sumPow < 205: db = "1d6"
+			case sumPow < 65:
+				db = "-2"
+			case sumPow < 85:
+				db = "-1"
+			case sumPow < 125:
+				db = "0"
+			case sumPow < 165:
+				db = "1d4"
+			case sumPow < 205:
+				db = "1d6"
 			}
 
-			// 卷积百分比
+			// --- 概率计算 ---
 			base := int(total / 5)
 			var rankSum int64
 			for k, v := range conv {
@@ -1432,96 +1434,67 @@ cmdCoc := &CmdItemInfo{
 			}
 			percentile := float64(rankSum) / float64(totalComb) * 100.0
 
-			switch theme {
-			case "官方":
-				msgText := fmt.Sprintf(
-					"力量:%d 敏捷:%d 意志:%d\n体质:%d 外貌:%d 教育:%d\n体型:%d 智力:%d 幸运:%d\nHP:%d <DB:%s> [%d/%d]",
-					vals["力量"], vals["敏捷"], vals["意志"],
-					vals["体质"], vals["外貌"], vals["教育"],
-					vals["体型"], vals["智力"], vals["幸运"],
-					hp, db,
-					total-vals["幸运"], total,
-				)
-				allResults = append(allResults, msgText)
-
-			case "星级":
-				titles := []string{}
-				if vals["力量"] > 65 && vals["体型"] > 65 { titles = append(titles, "巨力之躯") } else if vals["力量"] > 55 { titles = append(titles, "力能扛鼎") }
-				if vals["敏捷"] > 65 && vals["外貌"] > 60 { titles = append(titles, "灵光掠影") } else if vals["敏捷"] > 55 { titles = append(titles, "矫健身手") }
-				if vals["智力"] > 65 && vals["教育"] > 65 { titles = append(titles, "博学贤者") } else if vals["智力"] > 55 { titles = append(titles, "才思敏捷") }
-				if vals["意志"] > 65 && vals["体质"] > 60 { titles = append(titles, "钢铁意志") } else if vals["意志"] > 55 { titles = append(titles, "坚毅之人") }
-				if vals["外貌"] > 70 { titles = append(titles, "众人焦点") }
-				if vals["幸运"] > 65 { titles = append(titles, "命运的宠儿") }
-				if len(titles) == 0 { titles = append(titles, "平凡旅者") }
-				if len(titles) > 2 { titles = titles[:2] }
-
-				expected := 510.0
-				sigma := 40.0
-				z := (float64(total) - expected) / sigma
-				starsCount := int(math.Round(5 + z*3.5))
-				if starsCount < 1 { starsCount = 1 } else if starsCount > 10 { starsCount = 10 }
-				stars := strings.Repeat("★", starsCount) + strings.Repeat("☆", 10-starsCount)
-
-				msgText := fmt.Sprintf(
-					"【%s】「%s」\n%s\n力量:%d 敏捷:%d 意志:%d\n体质:%d 外貌:%d 教育:%d\n体型:%d 智力:%d 幸运:%d\nHP:%d [%d/%d] (超越了%.2f%%)",
-					chineseNums[i%len(chineseNums)],
-					strings.Join(titles, "・"),
-					stars,
-					vals["力量"], vals["敏捷"], vals["意志"],
-					vals["体质"], vals["外貌"], vals["教育"],
-					vals["体型"], vals["智力"], vals["幸运"],
-					hp, total-vals["幸运"], total,
-					100-percentile,
-				)
-				allResults = append(allResults, msgText)
-
-			case "炉石":
-				expected := 510.0
-				sigma := 40.0
-				z := (float64(total) - expected) / sigma
-				starsCount := int(math.Round(5 + z*3.5))
-				if starsCount < 1 { starsCount = 1 } else if starsCount > 10 { starsCount = 10 }
-
-				rare := "普通"
-				switch {
-				case starsCount <= 3: rare = "普通"
-				case starsCount <= 6: rare = "稀有"
-				case starsCount <= 8: rare = "史诗"
-				default: rare = "传说"
-				}
-
-				effects := []string{
-					"每当进行意志检定失败时，可重新掷一次骰。",
-					"在关键时刻，力量检定+10。",
-					"成功时额外恢复1HP。",
-					"第一次战斗检定失败视为普通成功。",
-					"幸运检定若成功，下次检定获得优势。",
-				}
-				effect := effects[i%len(effects)]
-
-				msgText := fmt.Sprintf(
-					"哇！★%s★ [%d/%d]\n力量:%d 敏捷:%d 意志:%d\n体质:%d 外貌:%d 教育:%d\n体型:%d 智力:%d 幸运:%d\n%s",
-					rare,
-					total-vals["幸运"], total,
-					vals["力量"], vals["敏捷"], vals["意志"],
-					vals["体质"], vals["外貌"], vals["教育"],
-					vals["体型"], vals["智力"], vals["幸运"],
-					effect,
-				)
-				allResults = append(allResults, msgText)
+			// --- 星级与称号 ---
+			expected := 510.0
+			sigma := 40.0
+			z := (float64(total) - expected) / sigma
+			starsCount := int(math.Round(5 + z*3.5))
+			if starsCount < 1 {
+				starsCount = 1
+			} else if starsCount > 10 {
+				starsCount = 10
 			}
+			stars := strings.Repeat("★", starsCount) + strings.Repeat("☆", 10-starsCount)
+
+			// --- 自动生成称号 ---
+			titles := []string{}
+			if vals["力量"] > 70 && vals["体型"] > 70 {
+				titles = append(titles, "巨力之躯")
+			} else if vals["力量"] > 60 {
+				titles = append(titles, "力能扛鼎")
+			}
+			if vals["敏捷"] > 70 && vals["外貌"] > 65 {
+				titles = append(titles, "灵光掠影")
+			} else if vals["敏捷"] > 60 {
+				titles = append(titles, "矫健之姿")
+			}
+			if vals["智力"] > 70 && vals["教育"] > 70 {
+				titles = append(titles, "博学贤者")
+			} else if vals["智力"] > 60 {
+				titles = append(titles, "思维敏捷")
+			}
+			if vals["意志"] > 70 && vals["体质"] > 65 {
+				titles = append(titles, "钢铁意志")
+			} else if vals["意志"] > 60 {
+				titles = append(titles, "坚定之心")
+			}
+			if vals["幸运"] > 70 {
+				titles = append(titles, "命运的宠儿")
+			}
+			if len(titles) == 0 {
+				titles = append(titles, "平凡旅者")
+			}
+			if len(titles) > 2 {
+				titles = titles[:2]
+			}
+
+			// --- 输出 ---
+			msgText := fmt.Sprintf(
+				"【%s】「%s」\n%s\n力量:%d 敏捷:%d 意志:%d\n体质:%d 外貌:%d 教育:%d\n体型:%d 智力:%d 幸运:%d\nHP:%d <DB:%s> [%d/%d]\n超越了%.2f%%的调查员",
+				chineseNums[i%len(chineseNums)],
+				strings.Join(titles, "・"),
+				stars,
+				vals["力量"], vals["敏捷"], vals["意志"],
+				vals["体质"], vals["外貌"], vals["教育"],
+				vals["体型"], vals["智力"], vals["幸运"],
+				hp, db,
+				total-vals["幸运"], total,
+				100-percentile,
+			)
+			allResults = append(allResults, msgText)
 		}
 
-		// --- 输出头部一次 ---
-		header := ""
-		switch theme {
-		case "官方":
-			header = fmt.Sprintf("<%s>的官方人物卡:\n", ctx.Player.Name)
-		case "星级":
-			header = fmt.Sprintf("<%s>的天命角色作成:\n", ctx.Player.Name)
-		case "炉石":
-			header = fmt.Sprintf("<%s>的炉石角色作成:\n", ctx.Player.Name)
-		}
+		header := fmt.Sprintf("<%s>的七版COC人物作成:\n", ctx.Player.Name)
 		finalMsg := header + strings.Join(allResults, "\n----------------------\n")
 		ReplyToSender(ctx, msg, finalMsg)
 		return CmdExecuteResult{Matched: true, Solved: true}
@@ -1529,8 +1502,8 @@ cmdCoc := &CmdItemInfo{
 }
 
 	theExt := &ExtInfo{
-		Name:       "coc7(铭茗亲美化包)",
-		Version:    "1.2.0",
+		Name:       "coc7",
+		Version:    "1.0.0",
 		Brief:      "第七版克苏鲁的呼唤TRPG跑团指令集",
 		AutoActive: true,
 		Author:     "木落",
